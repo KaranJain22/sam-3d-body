@@ -173,8 +173,21 @@ def _keypoint_error(pred: np.ndarray, gt: np.ndarray, idxs: Optional[np.ndarray]
 def _build_gt_vertices(model, row: Dict, device: torch.device) -> np.ndarray:
     model_params = torch.as_tensor(np.asarray(row["model_params"]), dtype=torch.float32, device=device)[None]
     shape_params = torch.as_tensor(np.asarray(row["shape_params"]), dtype=torch.float32, device=device)[None]
+
+    expr_params = None
+    num_face_expr = 0
+    if hasattr(model.head_pose, "num_face_comps"):
+        num_face_expr = int(model.head_pose.num_face_comps)
+    if hasattr(model.head_pose.mhr, "get_num_face_expression_blendshapes"):
+        try:
+            num_face_expr = int(model.head_pose.mhr.get_num_face_expression_blendshapes())
+        except Exception:
+            pass
+    if num_face_expr > 0:
+        expr_params = torch.zeros((1, num_face_expr), dtype=torch.float32, device=device)
+
     with torch.no_grad():
-        gt_verts, _ = model.head_pose.mhr(shape_params, model_params, None)
+        gt_verts, _ = model.head_pose.mhr(shape_params, model_params, expr_params)
     return (gt_verts.squeeze(0).detach().cpu().numpy() / 100.0).astype(np.float64)
 
 
