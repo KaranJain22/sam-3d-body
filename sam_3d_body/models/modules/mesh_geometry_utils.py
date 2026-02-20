@@ -35,7 +35,10 @@ def vertex_areas(vertices: np.ndarray, faces: np.ndarray, eps: float = 1e-12) ->
 
 
 def cotangent_laplacian(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
-    """Return symmetric positive semi-definite cotan Laplacian."""
+    """Return symmetric positive semi-definite cotan Laplacian.
+
+    Vectorized NumPy implementation to avoid Python loops over faces.
+    """
     n_verts = len(vertices)
     lap = np.zeros((n_verts, n_verts), dtype=np.float64)
 

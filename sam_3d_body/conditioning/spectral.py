@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
+try:
+    from scipy.sparse.linalg import eigsh  # type: ignore
+except Exception:  # pragma: no cover
+    eigsh = None
+
 from sam_3d_body.models.modules.mesh_geometry_utils import (
     as_numpy_array,
     cotangent_laplacian,
