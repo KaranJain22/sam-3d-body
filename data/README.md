@@ -58,6 +58,27 @@ The script uses `$SAM3D_BODY_ANN_DIR` by default (same environment variable as a
 - `monotonic_trends.csv` with quantile-bin monotonic trend summaries,
 - `analysis_table.csv` for reproducible downstream table generation.
 
+
+## 🧪 Pairwise Realism Judgments (Perceptual Evaluation)
+
+For pairwise human realism ratings and perceptual metric analysis, see:
+
+- format/schema: `scripts/perceptual_preferences/schema.json`
+- preprocessing: `scripts/perceptual_preferences/preprocess_pairwise_ratings.py`
+- evaluation: `scripts/perceptual_preferences/evaluate_pairwise_realism.py`
+
+Example:
+
+```bash
+python scripts/perceptual_preferences/preprocess_pairwise_ratings.py \
+  --input-files /path/raw_ratings.csv \
+  --output-dir /path/processed
+
+python scripts/perceptual_preferences/evaluate_pairwise_realism.py \
+  --input-file /path/processed/pairwise_realism_aggregated.csv \
+  --output-dir /path/processed/reports
+```
+
 ## ⬇️ Download Annotations
 
 You can download all annotation splits or only a specific split from SAM-3D-Body.
