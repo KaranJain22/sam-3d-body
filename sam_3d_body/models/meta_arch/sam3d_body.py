@@ -97,6 +97,12 @@ class SAM3DBody(BaseModel):
         self.init_camera_hand = nn.Embedding(1, self.head_camera_hand.ncam)
         nn.init.zeros_(self.init_camera_hand.weight)
 
+        self.enable_perceptual_weights = self.cfg.MODEL.get(
+            "PERCEPTUAL_WEIGHT_HEAD", {}
+        ).get("ENABLE", False)
+        if self.enable_perceptual_weights:
+            self.head_perceptual_weight = build_head(self.cfg, "perceptual_weight")
+
         self.camera_type = "perspective"
 
         # Support conditioned information for decoder
@@ -1188,6 +1194,24 @@ class SAM3DBody(BaseModel):
             "image_embeddings": image_embeddings,
         }
 
+        if self.enable_perceptual_weights:
+            if pose_output is not None:
+                output["mhr"]["perceptual_weights"] = self._predict_perceptual_weights(
+                    batch=batch,
+                    pose_output=pose_output,
+                    batch_indices=self.body_batch_idx,
+                    head_camera=self.head_camera,
+                )
+            if pose_output_hand is not None:
+                output["mhr_hand"][
+                    "perceptual_weights"
+                ] = self._predict_perceptual_weights(
+                    batch=batch,
+                    pose_output=pose_output_hand,
+                    batch_indices=self.hand_batch_idx,
+                    head_camera=self.head_camera_hand,
+                )
+
         if self.cfg.MODEL.DECODER.get("DO_HAND_DETECT_TOKENS", False):
             if len(self.body_batch_idx):
                 output_hand_box_tokens = tokens_output
@@ -1213,6 +1237,127 @@ class SAM3DBody(BaseModel):
                 output["mhr_hand"]["hand_logits"] = hand_logits_hand_batch
 
         return output
+
+    def _predict_perceptual_weights(
+        self,
+        batch: Dict,
+        pose_output: Dict,
+        batch_indices: list[int],
+        head_camera,
+    ) -> Dict:
+        pred_vertices = pose_output.get("pred_vertices")
+        if pred_vertices is None:
+            return {}
+
+        device = pred_vertices.device
+        batch_indices_t = torch.as_tensor(batch_indices, device=device, dtype=torch.long)
+
+        semantic_part_ids = self._get_semantic_part_ids(batch, pred_vertices, batch_indices_t)
+        curvature_scale_features = self._get_curvature_scale_features(pred_vertices)
+        differentiable_visibility, projected_screen_size = self._get_visibility_size_features(
+            batch, pose_output, pred_vertices, batch_indices_t, head_camera
+        )
+
+        vertex_features = torch.zeros(
+            pred_vertices.shape[0],
+            pred_vertices.shape[1],
+            self.cfg.MODEL.DECODER.DIM,
+            dtype=pred_vertices.dtype,
+            device=device,
+        )
+
+        return self.head_perceptual_weight(
+            vertex_features=vertex_features,
+            semantic_part_ids=semantic_part_ids,
+            curvature_scale_features=curvature_scale_features,
+            differentiable_visibility=differentiable_visibility,
+            projected_screen_size=projected_screen_size,
+        )
+
+    def _get_semantic_part_ids(
+        self,
+        batch: Dict,
+        pred_vertices: torch.Tensor,
+        batch_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        if "vertex_part_ids" in batch:
+            part_ids = self._flatten_person(batch["vertex_part_ids"])[batch_indices]
+            return part_ids.to(pred_vertices.device, dtype=torch.long)
+        return torch.zeros(
+            pred_vertices.shape[:2],
+            device=pred_vertices.device,
+            dtype=torch.long,
+        )
+
+    def _get_curvature_scale_features(self, pred_vertices: torch.Tensor) -> torch.Tensor:
+        ops = self.get_conditioning_operators(pred_vertices.device)
+        if ops is None:
+            return torch.zeros(
+                pred_vertices.shape[0], pred_vertices.shape[1], 2, device=pred_vertices.device
+            )
+
+        lap = torch.sparse_coo_tensor(
+            ops["laplacian"]["indices"],
+            ops["laplacian"]["values"],
+            tuple(ops["laplacian"]["shape"].tolist()),
+            device=pred_vertices.device,
+        ).coalesce()
+
+        v = pred_vertices
+        lap_v = torch.stack([torch.sparse.mm(lap, v_i) for v_i in v], dim=0)
+        curvature = lap_v.norm(dim=-1, keepdim=True)
+
+        adjacency = torch.sparse_coo_tensor(
+            ops["vertex_adjacency"]["indices"],
+            ops["vertex_adjacency"]["values"],
+            tuple(ops["vertex_adjacency"]["shape"].tolist()),
+            device=pred_vertices.device,
+        ).coalesce()
+        degree = torch.sparse.sum(adjacency, dim=1).to_dense().clamp(min=1.0)
+        mean_neighbor = torch.stack([torch.sparse.mm(adjacency, v_i) for v_i in v], dim=0)
+        mean_neighbor = mean_neighbor / degree.unsqueeze(0).unsqueeze(-1)
+        local_scale = (v - mean_neighbor).norm(dim=-1, keepdim=True)
+
+        return torch.cat([curvature, local_scale], dim=-1)
+
+    def _get_visibility_size_features(
+        self,
+        batch: Dict,
+        pose_output: Dict,
+        pred_vertices: torch.Tensor,
+        batch_indices: torch.Tensor,
+        head_camera,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if "vertex_visibility" in batch:
+            visibility = self._flatten_person(batch["vertex_visibility"])[batch_indices]
+            visibility = visibility.to(pred_vertices).unsqueeze(-1)
+        else:
+            visibility = torch.ones(
+                pred_vertices.shape[0], pred_vertices.shape[1], 1, device=pred_vertices.device
+            )
+
+        proj = head_camera.perspective_projection(
+            pred_vertices,
+            pose_output["pred_cam"],
+            self._flatten_person(batch["bbox_center"])[batch_indices],
+            self._flatten_person(batch["bbox_scale"])[batch_indices, 0],
+            self._flatten_person(batch["ori_img_size"])[batch_indices],
+            self._flatten_person(
+                batch["cam_int"]
+                .unsqueeze(1)
+                .expand(-1, batch["img"].shape[1], -1, -1)
+                .contiguous()
+            )[batch_indices],
+            use_intrin_center=self.cfg.MODEL.DECODER.get("USE_INTRIN_CENTER", False),
+        )
+        depth = proj["pred_keypoints_2d_depth"].clamp(min=1e-4).unsqueeze(-1)
+        focal = proj["focal_length"].view(-1, 1, 1)
+        projected_screen_size = focal / depth
+        projected_screen_size = projected_screen_size / projected_screen_size.amax(
+            dim=1, keepdim=True
+        ).clamp(min=1e-6)
+
+        return visibility, projected_screen_size
 
     def forward_step(
         self, batch: Dict, decoder_type: str = "body"
