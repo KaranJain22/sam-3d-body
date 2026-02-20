@@ -16,11 +16,29 @@ def laplace_beltrami_spectrum(vertices, faces, n_eigs: int = 16) -> np.ndarray:
     lap = cotangent_laplacian(vertices, faces)
     mass = mass_matrix(vertices, faces)
 
-    inv_sqrt_mass = np.diag(1.0 / np.sqrt(np.maximum(np.diag(mass), 1e-12)))
-    normalized = inv_sqrt_mass @ lap @ inv_sqrt_mass
-    eigvals = np.linalg.eigvalsh(normalized)
+    inv_sqrt_mass = 1.0 / np.sqrt(np.maximum(np.diag(mass), 1e-12))
+    normalized = lap * inv_sqrt_mass[:, None] * inv_sqrt_mass[None, :]
+
+    n = normalized.shape[0]
+    k = min(max(int(n_eigs), 1), n)
+
+    # Use a partial eigensolver when scipy is available; fall back to dense numpy.
+    try:
+        from scipy.linalg import eigh  # type: ignore
+
+        eigvals = eigh(
+            normalized,
+            eigvals_only=True,
+            subset_by_index=[0, k - 1],
+            check_finite=False,
+            overwrite_a=True,
+        )
+    except Exception:
+        eigvals = np.linalg.eigvalsh(normalized)
+        eigvals = eigvals[:k]
+
     eigvals = np.sort(np.maximum(eigvals, 0.0))
-    return eigvals[: min(n_eigs, len(eigvals))]
+    return eigvals
 
 
 def spectral_condition_number(vertices, faces, low_rank: int = 1, high_rank: int = -1) -> float:
