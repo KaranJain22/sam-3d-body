@@ -1320,6 +1320,29 @@ class SAM3DBody(BaseModel):
 
         return torch.cat([curvature, local_scale], dim=-1)
 
+    def _get_local_scale(self, vertices: torch.Tensor) -> torch.Tensor:
+        ops = self.get_conditioning_operators(vertices.device)
+        if ops is None:
+            return torch.ones(
+                vertices.shape[0],
+                vertices.shape[1],
+                device=vertices.device,
+                dtype=vertices.dtype,
+            )
+
+        adjacency = torch.sparse_coo_tensor(
+            ops["vertex_adjacency"]["indices"],
+            ops["vertex_adjacency"]["values"],
+            tuple(ops["vertex_adjacency"]["shape"].tolist()),
+            device=vertices.device,
+        ).coalesce()
+        degree = torch.sparse.sum(adjacency, dim=1).to_dense().clamp(min=1.0)
+        mean_neighbor = torch.stack(
+            [torch.sparse.mm(adjacency, v_i) for v_i in vertices], dim=0
+        )
+        mean_neighbor = mean_neighbor / degree.unsqueeze(0).unsqueeze(-1)
+        return (vertices - mean_neighbor).norm(dim=-1)
+
     def _get_visibility_size_features(
         self,
         batch: Dict,
@@ -1376,7 +1399,73 @@ class SAM3DBody(BaseModel):
         # Crop-image (pose) branch
         pose_output = self.forward_pose_branch(batch)
 
+        conditioning_cfg = self.cfg.get("LOSS", {}).get("CONDITIONING", {})
+        if conditioning_cfg.get("ENABLE", False):
+            self._append_conditioning_losses(
+                batch=batch,
+                pose_output=pose_output,
+                use_perceptual_weights=conditioning_cfg.get(
+                    "USE_PERCEPTUAL_WEIGHTS", False
+                ),
+            )
+
         return pose_output
+
+    def _append_conditioning_losses(
+        self,
+        batch: Dict,
+        pose_output: Dict,
+        use_perceptual_weights: bool,
+    ) -> None:
+        def _extract_target_vertices(indices: list[int], pred_key: str):
+            if not indices or pred_key not in pose_output or pose_output[pred_key] is None:
+                return None, None
+            preds = pose_output[pred_key].get("pred_vertices")
+            if preds is None:
+                return None, None
+
+            flat_gt = None
+            for key in ["gt_vertices", "target_vertices", "vertices"]:
+                if key in batch:
+                    flat_gt = self._flatten_person(batch[key])
+                    break
+            if flat_gt is None:
+                return None, None
+
+            batch_indices_t = torch.as_tensor(indices, device=preds.device, dtype=torch.long)
+            return preds, flat_gt[batch_indices_t].to(preds)
+
+        for key, indices in (("mhr", self.body_batch_idx), ("mhr_hand", self.hand_batch_idx)):
+            pred_vertices, target_vertices = _extract_target_vertices(indices, key)
+            if pred_vertices is None:
+                continue
+
+            local_scale = self._get_local_scale(target_vertices)
+
+            perceptual_weights = None
+            if use_perceptual_weights and key in pose_output:
+                perceptual_weights = pose_output[key].get("perceptual_weights", {}).get(
+                    "omega"
+                )
+
+            valid_mask = None
+            if "vertex_valid_mask" in batch:
+                batch_indices_t = torch.as_tensor(
+                    indices, device=pred_vertices.device, dtype=torch.long
+                )
+                valid_mask = self._flatten_person(batch["vertex_valid_mask"])[
+                    batch_indices_t
+                ].to(pred_vertices)
+
+            loss = self._compute_conditioning_loss(
+                pred_vertices=pred_vertices,
+                target_vertices=target_vertices,
+                local_scale=local_scale,
+                perceptual_weights=perceptual_weights,
+                valid_mask=valid_mask,
+            )
+
+            pose_output[key].setdefault("losses", {})["conditioning_loss"] = loss
 
     def run_inference(
         self,
