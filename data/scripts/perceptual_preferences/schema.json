@@ -1,13 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "SAM-3D-Body Pairwise Perceptual Preferences",
+  "title": "SAM-3D-Body Pairwise Realism Judgments",
   "type": "object",
   "required": ["sample_id", "image_id", "person_id", "candidate_a", "candidate_b", "preferred"],
   "properties": {
     "sample_id": {"type": "string"},
     "image_id": {"type": "string"},
     "person_id": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
-    "preferred": {"type": "string", "enum": ["a", "b"]},
+    "preferred": {"type": "string", "enum": ["a", "b", "t"]},
+    "preference_score": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+    "n_ratings": {"type": "integer", "minimum": 1},
     "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
     "candidate_a": {"$ref": "#/$defs/candidate"},
     "candidate_b": {"$ref": "#/$defs/candidate"}
@@ -15,7 +17,7 @@
   "$defs": {
     "candidate": {
       "type": "object",
-      "required": ["mesh_id", "semantic_part_ids", "curvature_scale_features", "visibility", "screen_size"],
+      "required": ["mesh_id"],
       "properties": {
         "mesh_id": {"type": "string"},
         "semantic_part_ids": {"type": "array", "items": {"type": "integer", "minimum": 0}},
@@ -30,8 +32,29 @@
         },
         "visibility": {"type": "array", "items": {"type": "number"}},
         "screen_size": {"type": "array", "items": {"type": "number"}},
-        "vertex_error": {"type": "array", "items": {"type": "number"}}
-      }
+        "vertex_error": {"type": "array", "items": {"type": "number"}},
+        "mpjpe": {"type": "number"},
+        "pve": {"type": "number"},
+        "cne": {"type": "number"},
+        "cne_log": {"type": "number"},
+        "cne_static": {"type": "number"},
+        "cne_log_static": {"type": "number"},
+        "cne_learned": {"type": "number"},
+        "cne_log_learned": {"type": "number"}
+      },
+      "anyOf": [
+        {
+          "required": [
+            "semantic_part_ids",
+            "curvature_scale_features",
+            "visibility",
+            "screen_size"
+          ]
+        },
+        {"required": ["mpjpe", "pve", "cne", "cne_log"]},
+        {"required": ["cne_static", "cne_log_static"]},
+        {"required": ["cne_learned", "cne_log_learned"]}
+      ]
     }
   }
 }
