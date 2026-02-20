@@ -1482,6 +1482,7 @@ class SAM3DBody(BaseModel):
             - full: full-body inference with both body and hand decoders
             - body: inference with body decoder only (still full-body output)
             - hand: inference with hand decoder only (only hand output)
+            - auto: route between lightweight and full pipelines based on kappa
         """
 
         height, width = img.shape[:2]
@@ -1493,11 +1494,130 @@ class SAM3DBody(BaseModel):
         elif inference_type == "hand":
             pose_output = self.forward_step(batch, decoder_type="hand")
             return pose_output
+        elif inference_type == "auto":
+            pose_output = self.forward_step(batch, decoder_type="body")
+            routed_inference_type, routing_info = self._route_inference_type(
+                pose_output=pose_output,
+                requested_inference_type=inference_type,
+            )
+            pose_output["routing"] = routing_info
+            if routed_inference_type == "body":
+                return pose_output
+            if routed_inference_type == "hand":
+                hand_output = self.forward_step(batch, decoder_type="hand")
+                hand_output["routing"] = routing_info
+                return hand_output
+            if routed_inference_type != "full":
+                raise ValueError("Invalid routed inference type: ", routed_inference_type)
+            return self._run_full_inference(
+                img=img,
+                batch=batch,
+                transform_hand=transform_hand,
+                thresh_wrist_angle=thresh_wrist_angle,
+                pose_output=pose_output,
+                cam_int=cam_int,
+                image_hw=(height, width),
+                routing_info=routing_info,
+            )
         elif not inference_type == "full":
-            ValueError("Invalid inference type: ", inference_type)
+            raise ValueError("Invalid inference type: ", inference_type)
+
+        return self._run_full_inference(
+            img=img,
+            batch=batch,
+            transform_hand=transform_hand,
+            thresh_wrist_angle=thresh_wrist_angle,
+            pose_output=None,
+            cam_int=cam_int,
+            image_hw=(height, width),
+        )
+
+    def _estimate_conditioning_kappa(self, pose_output: Dict) -> float:
+        pred_vertices = pose_output.get("mhr", {}).get("pred_vertices")
+        if pred_vertices is None:
+            return 0.0
+
+        local_scale = self._get_local_scale(pred_vertices)
+        lower_q = self.cfg.MODEL.get("CONDITIONING", {}).get("ROUTER", {}).get(
+            "LOWER_QUANTILE", 0.1
+        )
+        upper_q = self.cfg.MODEL.get("CONDITIONING", {}).get("ROUTER", {}).get(
+            "UPPER_QUANTILE", 0.9
+        )
+        eps = self.cfg.MODEL.get("CONDITIONING", {}).get("ROUTER", {}).get(
+            "EPS", 1e-6
+        )
+        low = torch.quantile(local_scale, q=lower_q, dim=1)
+        high = torch.quantile(local_scale, q=upper_q, dim=1)
+        kappa = torch.log((high + eps) / (low + eps))
+        return float(kappa.mean().detach().cpu().item())
+
+    def _route_inference_type(
+        self,
+        pose_output: Dict,
+        requested_inference_type: str,
+    ) -> Tuple[str, Dict[str, Any]]:
+        router_cfg = self.cfg.MODEL.get("CONDITIONING", {}).get("ROUTER", {})
+        if requested_inference_type != "auto":
+            return requested_inference_type, {
+                "requested_inference_type": requested_inference_type,
+                "selected_inference_type": requested_inference_type,
+            }
+
+        kappa = self._estimate_conditioning_kappa(pose_output)
+        low_thresh = router_cfg.get("LOW_KAPPA_THRESHOLD", 0.6)
+        high_thresh = router_cfg.get("HIGH_KAPPA_THRESHOLD", 1.0)
+
+        low_mode = router_cfg.get("LOW_KAPPA_INFERENCE_TYPE", "body")
+        mid_mode = router_cfg.get("MID_KAPPA_INFERENCE_TYPE", "full")
+        high_mode = router_cfg.get("HIGH_KAPPA_INFERENCE_TYPE", "full")
+
+        if kappa >= high_thresh:
+            selected = high_mode
+            bucket = "high"
+        elif kappa <= low_thresh:
+            selected = low_mode
+            bucket = "low"
+        else:
+            selected = mid_mode
+            bucket = "mid"
+
+        valid_modes = {"full", "body", "hand"}
+        if selected not in valid_modes:
+            logger.warning(
+                "Invalid MODEL.CONDITIONING.ROUTER mode '%s'; falling back to full.",
+                selected,
+            )
+            selected = "full"
+
+        routing_info = {
+            "requested_inference_type": requested_inference_type,
+            "selected_inference_type": selected,
+            "kappa": kappa,
+            "kappa_bucket": bucket,
+            "low_kappa_threshold": low_thresh,
+            "high_kappa_threshold": high_thresh,
+        }
+        return selected, routing_info
+
+    def _run_full_inference(
+        self,
+        img,
+        batch: Dict,
+        transform_hand: Any,
+        thresh_wrist_angle: float,
+        pose_output: Optional[Dict],
+        cam_int: torch.Tensor,
+        image_hw: Tuple[int, int],
+        routing_info: Optional[Dict[str, Any]] = None,
+    ):
+        height, width = image_hw
 
         # Step 1. For full-body inference, we first inference with the body decoder.
-        pose_output = self.forward_step(batch, decoder_type="body")
+        if pose_output is None:
+            pose_output = self.forward_step(batch, decoder_type="body")
+        if routing_info is not None:
+            pose_output["routing"] = routing_info
         left_xyxy, right_xyxy = self._get_hand_box(pose_output, batch)
         ori_local_wrist_rotmat = roma.euler_to_rotmat(
             "XZY",
