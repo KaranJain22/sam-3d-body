@@ -85,10 +85,28 @@ def _iter_rows(annotation_dir: Path, glob_pattern: str) -> Iterable[Dict]:
 
 
 def _to_numpy_keypoints3d(value) -> np.ndarray:
-    arr = np.stack(value)
+    arr = np.asarray(value)
+    if arr.dtype == object:
+        arr = np.stack(list(value))
     if arr.ndim != 2 or arr.shape[1] != 3:
         raise ValueError(f"Expected keypoints_3d shape (K,3), got {arr.shape}")
     return arr.astype(np.float64)
+
+
+def _to_camera_intrinsics(value, device: torch.device) -> torch.Tensor:
+    """Normalize cam_int from parquet rows to a 3x3 tensor."""
+    arr = np.asarray(value)
+    if arr.dtype == object:
+        arr = np.stack(list(value))
+
+    if arr.shape == (3, 3):
+        cam = arr
+    elif arr.ndim == 1 and arr.size == 9:
+        cam = arr.reshape(3, 3)
+    else:
+        raise ValueError(f"Expected cam_int shape (3,3) or (9,), got {arr.shape}")
+
+    return torch.as_tensor(cam, dtype=torch.float32, device=device)
 
 
 def _keypoint_error(pred: np.ndarray, gt: np.ndarray, idxs: Optional[np.ndarray] = None) -> float:
@@ -136,7 +154,7 @@ def main() -> None:
         try:
             image_path = img_dir / _get_img_name(rec)
             bbox = np.asarray(rec["bbox"], dtype=np.float32).reshape(1, 4)
-            cam_int = torch.as_tensor(np.stack(rec["cam_int"]), dtype=torch.float32, device=device)
+            cam_int = _to_camera_intrinsics(rec["cam_int"], device)
 
             outputs = estimator.process_one_image(
                 str(image_path),
