@@ -90,9 +90,6 @@ def _iter_rows(annotation_dir: Path, glob_pattern: str) -> Iterable[Dict]:
 
 
 def _to_numpy_keypoints3d(value) -> np.ndarray:
-    if value is None:
-        raise ValueError("keypoints_3d is None")
-
     arr = np.asarray(value)
     if arr.dtype == object:
         try:
@@ -105,17 +102,43 @@ def _to_numpy_keypoints3d(value) -> np.ndarray:
     return arr.astype(np.float64)
 
 
+def _get_optional_keypoints3d(row: Dict) -> Optional[np.ndarray]:
+    value = row.get("keypoints_3d")
+    if _is_missing(value):
+        return None
+    return _to_numpy_keypoints3d(value)
+
+
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
+    # Pandas nullable scalars / NaN-like values
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:
+        pass
+    if isinstance(value, str) and value.strip().lower() in {"none", "null", "nan", ""}:
+        return True
+    return False
+
+
 def _to_camera_intrinsics(value, device: torch.device) -> Optional[torch.Tensor]:
     """Normalize cam_int from parquet rows to a 3x3 tensor.
 
     Returns None when intrinsics are missing so the estimator can use its fallback behavior.
     """
-    if value is None:
+    if _is_missing(value):
         return None
 
     arr = np.asarray(value)
     if arr.size == 0:
         return None
+
+    if arr.ndim == 0:
+        scalar = arr.item()
+        if _is_missing(scalar):
+            return None
 
     if arr.dtype == object:
         # Some parquet rows store nested arrays with object dtype.
@@ -198,7 +221,7 @@ def main() -> None:
 
             pred_vertices = np.asarray(outputs[0]["pred_vertices"], dtype=np.float64)
             pred_keypoints = np.asarray(outputs[0]["pred_keypoints_3d"], dtype=np.float64)
-            gt_keypoints = _to_numpy_keypoints3d(rec["keypoints_3d"])
+            gt_keypoints = _get_optional_keypoints3d(rec)
             gt_vertices = _build_gt_vertices(model, rec, device)
 
             cond = compute_conditioning(
@@ -218,9 +241,9 @@ def main() -> None:
                 "person_id": rec.get("person_id", -1),
                 "kappa_geom": float(cond["kappa_geom"]),
                 "kappa_spec": float(cond["kappa_spec"]),
-                "mpjpe": _keypoint_error(pred_keypoints, gt_keypoints),
-                "hand_error": _keypoint_error(pred_keypoints, gt_keypoints, HAND_IDXS),
-                "face_error": _keypoint_error(pred_keypoints, gt_keypoints, FACE_IDXS),
+                "mpjpe": _keypoint_error(pred_keypoints, gt_keypoints) if gt_keypoints is not None else np.nan,
+                "hand_error": _keypoint_error(pred_keypoints, gt_keypoints, HAND_IDXS) if gt_keypoints is not None else np.nan,
+                "face_error": _keypoint_error(pred_keypoints, gt_keypoints, FACE_IDXS) if gt_keypoints is not None else np.nan,
                 "pve": pve_value,
                 "cne": cne_value,
             }
