@@ -41,6 +41,23 @@ Set up environment variables for annotation download and WebDataset output direc
   export SAM3D_BODY_WDS_DIR=/path/to/sam3d/body/webdatasets
 ```
 
+## 📊 Conditioning Analysis for Paper Tables/Plots
+
+After preparing and exporting evaluation metrics (including `kappa_geom`, `kappa_spec`, hand/face error, MPJPE, PVE, and CNE) into CSV/JSON/Parquet files under `$SAM3D_BODY_ANN_DIR`, you can generate reproducible plots and summary tables with:
+
+```bash
+python ../tools/analyze_conditioning.py \
+  --glob-pattern "**/*metrics*.csv" \
+  --output-dir ../tools/analysis_outputs/conditioning
+```
+
+The script uses `$SAM3D_BODY_ANN_DIR` by default (same environment variable as above) and saves:
+
+- scatter plots (`kappa_geom` vs hand/face error, `kappa_spec` vs MPJPE/PVE/CNE),
+- `correlations.csv` with Pearson/Spearman summaries,
+- `monotonic_trends.csv` with quantile-bin monotonic trend summaries,
+- `analysis_table.csv` for reproducible downstream table generation.
+
 ## ⬇️ Download Annotations
 
 You can download all annotation splits or only a specific split from SAM-3D-Body.
