@@ -124,6 +124,41 @@ cv2.imwrite("output.jpg", rend_img.astype(np.uint8))
 
 For a complete demo with visualization, see [notebook/demo_human.ipynb](notebook/demo_human.ipynb).
 
+### Optional conditioning and routing config
+
+`model_config.yaml` now supports optional conditioning-aware controls. All of the
+following are disabled by default so existing configs keep the same behavior:
+
+```yaml
+MODEL:
+  CONDITIONING:
+    EPS: 1.0e-12
+    TAU: 1.0e-6
+    PERCENTILE_BOUNDS: [0.1, 0.9]
+    SPECTRAL_EIGENSOLVER:
+      ENABLE: false
+      METHOD: lanczos
+      NUM_EIGENVALUES: 16
+      MAX_ITERS: 100
+      TOL: 1.0e-6
+
+  PERCEPTUAL_WEIGHT:
+    ENABLE: false
+    NORMALIZE: false
+    MIN_VALUE: 0.0
+
+  ADAPTIVE_ROUTER:
+    ENABLE: false
+    LOW_KAPPA_THRESHOLD: 0.6
+    HIGH_KAPPA_THRESHOLD: 1.0
+    LOW_KAPPA_INFERENCE_TYPE: body
+    MID_KAPPA_INFERENCE_TYPE: full
+    HIGH_KAPPA_INFERENCE_TYPE: full
+
+EVAL:
+  CONDITIONING_BUCKETS: []
+```
+
 
 ## Model Description
 
