@@ -87,6 +87,7 @@ class SAM3DBodyEstimator:
                 - full: full-body inference with both body and hand decoders
                 - body: inference with body decoder only (still full-body output)
                 - hand: inference with hand decoder only (only hand output)
+                - auto: route between body/full using MODEL.CONDITIONING.ROUTER
         """
 
         # clear all cached results
@@ -183,10 +184,15 @@ class SAM3DBodyEstimator:
             transform_hand=self.transform_hand,
             thresh_wrist_angle=self.thresh_wrist_angle,
         )
-        if inference_type == "full":
+        effective_inference_type = inference_type
+        if isinstance(outputs, tuple):
             pose_output, batch_lhand, batch_rhand, _, _ = outputs
+            effective_inference_type = "full"
         else:
             pose_output = outputs
+            effective_inference_type = pose_output.get("routing", {}).get(
+                "selected_inference_type", inference_type
+            )
 
         out = pose_output["mhr"]
         out = recursive_to(out, "cpu")
@@ -215,7 +221,7 @@ class SAM3DBodyEstimator:
                 }
             )
 
-            if inference_type == "full":
+            if effective_inference_type == "full":
                 all_out[-1]["lhand_bbox"] = np.array(
                     [
                         (
@@ -256,5 +262,8 @@ class SAM3DBodyEstimator:
                         ).item(),
                     ]
                 )
+
+            if "routing" in pose_output:
+                all_out[-1]["routing"] = pose_output["routing"]
 
         return all_out
