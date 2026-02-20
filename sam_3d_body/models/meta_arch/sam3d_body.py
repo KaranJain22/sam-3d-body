@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from sam_3d_body.data.utils.prepare_batch import prepare_batch
+from sam_3d_body.conditioning.precompute import build_mesh_operators, get_mesh_operators
 from sam_3d_body.models.decoders.prompt_encoder import PositionEmbeddingRandom
 from sam_3d_body.models.modules.mhr_utils import (
     fix_wrist_euler,
@@ -71,6 +72,9 @@ class SAM3DBody(BaseModel):
         self.head_pose_hand = build_head(
             self.cfg, self.cfg.MODEL.PERSON_HEAD.POSE_TYPE, enable_hand_model=True
         )
+
+        self._conditioning_operators_cpu = self._initialize_conditioning_precompute()
+        self._conditioning_operators_device: Dict[torch.device, Dict[str, Any]] = {}
         self.head_pose_hand.hand_pose_comps_ori = nn.Parameter(
             self.head_pose_hand.hand_pose_comps.clone(), requires_grad=False
         )
@@ -241,6 +245,41 @@ class SAM3DBody(BaseModel):
             num_fcs=2,
             add_identity=False,
         )
+
+    def _initialize_conditioning_precompute(self) -> Optional[Dict[str, Any]]:
+        cfg = self.cfg.MODEL.get("CONDITIONING_PRECOMPUTE", {})
+        if not cfg.get("ENABLE", True):
+            return None
+
+        cache_dir = cfg.get("CACHE_DIR", ".cache/sam_3d_body")
+        include_geodesic = cfg.get("INCLUDE_GEODESIC", False)
+        geodesic_max_hops = int(cfg.get("GEODESIC_MAX_HOPS", 2))
+        force_recompute = cfg.get("FORCE_RECOMPUTE", False)
+
+        operators = build_mesh_operators(
+            self.head_pose.faces,
+            cache_dir=cache_dir,
+            include_geodesic=include_geodesic,
+            geodesic_max_hops=geodesic_max_hops,
+            force_recompute=force_recompute,
+        )
+        logger.info(
+            "Loaded mesh conditioning operators (%s) from %s",
+            operators["laplacian"]["type"],
+            operators.get("cache_path", "<memory>"),
+        )
+        return operators
+
+    def get_conditioning_operators(self, device: torch.device | str) -> Optional[Dict[str, Any]]:
+        if self._conditioning_operators_cpu is None:
+            return None
+
+        device = torch.device(device)
+        if device not in self._conditioning_operators_device:
+            self._conditioning_operators_device[device] = get_mesh_operators(
+                self._conditioning_operators_cpu, device
+            )
+        return self._conditioning_operators_device[device]
 
     def _get_decoder_condition(self, batch: Dict) -> Optional[torch.Tensor]:
         num_person = batch["img"].shape[1]
