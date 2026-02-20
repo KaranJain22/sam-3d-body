@@ -11,11 +11,68 @@ import numpy as np
 import torch
 
 from sam_3d_body import load_sam_3d_body_hf, SAM3DBodyEstimator
+from sam_3d_body.metrics import summarize_cne_metrics
 from sam_3d_body.metadata.mhr70 import pose_info as mhr70_pose_info
 from sam_3d_body.visualization.renderer import Renderer
 from sam_3d_body.visualization.skeleton_visualizer import SkeletonVisualizer
 
 LIGHT_BLUE = (0.65098039, 0.74117647, 0.85882353)
+
+
+def summarize_inference_metrics(
+    pred_vertices: np.ndarray,
+    gt_vertices: np.ndarray,
+    pred_keypoints_3d: Optional[np.ndarray] = None,
+    gt_keypoints_3d: Optional[np.ndarray] = None,
+    local_scale: Optional[np.ndarray] = None,
+    omega: Optional[np.ndarray] = None,
+    region_masks: Optional[Dict[str, np.ndarray]] = None,
+    tau: float = 1e-6,
+    eps: float = 1e-12,
+) -> Dict[str, float]:
+    """Summarize standard mesh/joint metrics and conditioning-aware CNE metrics.
+
+    This helper mirrors common notebook reporting (MPJPE/PVE) and extends it with
+    CNE summaries, including optional perceptual (omega-weighted) and regional
+    (hands/face/body) variants.
+    """
+
+    pred_vertices = np.asarray(pred_vertices, dtype=np.float64)
+    gt_vertices = np.asarray(gt_vertices, dtype=np.float64)
+    if pred_vertices.ndim == 2:
+        pred_vertices = pred_vertices[None, ...]
+    if gt_vertices.ndim == 2:
+        gt_vertices = gt_vertices[None, ...]
+
+    metrics = {
+        "pve": float(np.linalg.norm(pred_vertices - gt_vertices, axis=-1).mean())
+    }
+
+    if pred_keypoints_3d is not None and gt_keypoints_3d is not None:
+        pred_keypoints_3d = np.asarray(pred_keypoints_3d, dtype=np.float64)
+        gt_keypoints_3d = np.asarray(gt_keypoints_3d, dtype=np.float64)
+        if pred_keypoints_3d.ndim == 2:
+            pred_keypoints_3d = pred_keypoints_3d[None, ...]
+        if gt_keypoints_3d.ndim == 2:
+            gt_keypoints_3d = gt_keypoints_3d[None, ...]
+        metrics["mpjpe"] = float(
+            np.linalg.norm(pred_keypoints_3d - gt_keypoints_3d, axis=-1).mean()
+        )
+
+    if local_scale is not None:
+        metrics.update(
+            summarize_cne_metrics(
+                pred_vertices=pred_vertices,
+                gt_vertices=gt_vertices,
+                local_scale=local_scale,
+                tau=tau,
+                eps=eps,
+                omega=omega,
+                region_masks=region_masks,
+            )
+        )
+
+    return metrics
 
 
 def setup_sam_3d_body(
