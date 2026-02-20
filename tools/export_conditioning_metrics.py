@@ -90,19 +90,45 @@ def _iter_rows(annotation_dir: Path, glob_pattern: str) -> Iterable[Dict]:
 
 
 def _to_numpy_keypoints3d(value) -> np.ndarray:
+    if value is None:
+        raise ValueError("keypoints_3d is None")
+
     arr = np.asarray(value)
     if arr.dtype == object:
-        arr = np.stack(list(value))
+        try:
+            arr = np.stack(list(value))
+        except TypeError as exc:
+            raise ValueError("keypoints_3d has object dtype but is not iterable") from exc
+
     if arr.ndim != 2 or arr.shape[1] != 3:
         raise ValueError(f"Expected keypoints_3d shape (K,3), got {arr.shape}")
     return arr.astype(np.float64)
 
 
-def _to_camera_intrinsics(value, device: torch.device) -> torch.Tensor:
-    """Normalize cam_int from parquet rows to a 3x3 tensor."""
+def _to_camera_intrinsics(value, device: torch.device) -> Optional[torch.Tensor]:
+    """Normalize cam_int from parquet rows to a 3x3 tensor.
+
+    Returns None when intrinsics are missing so the estimator can use its fallback behavior.
+    """
+    if value is None:
+        return None
+
     arr = np.asarray(value)
+    if arr.size == 0:
+        return None
+
     if arr.dtype == object:
-        arr = np.stack(list(value))
+        # Some parquet rows store nested arrays with object dtype.
+        if arr.shape == () and arr.item() is None:
+            return None
+        try:
+            arr = np.stack(list(value))
+        except TypeError:
+            # Handle scalar objects (e.g., list stored as a single object cell).
+            scalar = arr.item() if arr.shape == () else None
+            if scalar is None:
+                return None
+            arr = np.asarray(scalar)
 
     if arr.shape == (3, 3):
         cam = arr
@@ -159,7 +185,7 @@ def main() -> None:
         try:
             image_path = img_dir / _get_img_name(rec)
             bbox = np.asarray(rec["bbox"], dtype=np.float32).reshape(1, 4)
-            cam_int = _to_camera_intrinsics(rec["cam_int"], device)
+            cam_int = _to_camera_intrinsics(rec.get("cam_int"), device)
 
             outputs = estimator.process_one_image(
                 str(image_path),
