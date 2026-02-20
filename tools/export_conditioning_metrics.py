@@ -24,6 +24,11 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
+import os
+import sys
+if "sam_3d_body" not in sys.modules:
+    sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
 from sam_3d_body.conditioning import compute_conditioning
 from sam_3d_body.metrics import cne
