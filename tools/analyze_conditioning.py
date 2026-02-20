@@ -18,9 +18,10 @@ import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from tools.report_generator import write_named_table_reports
 
 # Required analyses from the task request.
 REQUIRED_PAIRS: Sequence[Tuple[str, str]] = (
@@ -224,6 +225,51 @@ def _trend_summary(x: np.ndarray, y: np.ndarray, bins: int) -> Dict[str, float |
     }
 
 
+def _assign_quantile_bucket(
+    values: pd.Series,
+    low_q: float = 1.0 / 3.0,
+    high_q: float = 2.0 / 3.0,
+) -> pd.Series:
+    """Assign low/med/high buckets from quantiles."""
+    numeric = pd.to_numeric(values, errors="coerce")
+    valid = numeric.dropna()
+    out = pd.Series(index=values.index, dtype="object")
+    if valid.empty:
+        return out
+
+    low_t = float(valid.quantile(low_q))
+    high_t = float(valid.quantile(high_q))
+    out.loc[numeric <= low_t] = "low"
+    out.loc[(numeric > low_t) & (numeric < high_t)] = "med"
+    out.loc[numeric >= high_t] = "high"
+    return out
+
+
+def _bucket_metric_report(df: pd.DataFrame, kappa_col: str) -> pd.DataFrame:
+    metric_cols = ["mpjpe", "pve", "cne", "cne_log", "hand_error", "face_error"]
+    present_metrics = [m for m in metric_cols if m in df.columns]
+
+    bucket_col = f"{kappa_col}_bucket"
+    work = df.copy()
+    work[bucket_col] = _assign_quantile_bucket(work[kappa_col])
+    work = work.dropna(subset=[bucket_col])
+
+    rows: List[Dict[str, float | int | str]] = []
+    for bucket in ("low", "med", "high"):
+        part = work[work[bucket_col] == bucket]
+        row: Dict[str, float | int | str] = {
+            "kappa_metric": kappa_col,
+            "bucket": bucket,
+            "n": int(len(part)),
+            "kappa_mean": float(part[kappa_col].mean()) if len(part) else float("nan"),
+        }
+        for metric in present_metrics:
+            row[metric] = float(part[metric].mean()) if len(part) else float("nan")
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
 def _scatter_plot(
     x: np.ndarray,
     y: np.ndarray,
@@ -233,6 +279,8 @@ def _scatter_plot(
     max_points: int,
     seed: int,
 ) -> None:
+    import matplotlib.pyplot as plt
+
     rng = np.random.default_rng(seed)
     n = x.shape[0]
     if n > max_points:
@@ -280,6 +328,7 @@ def main() -> None:
     rename_map = {resolved[n]: n for n in needed}
     working = working.rename(columns=rename_map)
     working = _coerce_numeric(working, needed)
+    working["cne_log"] = np.log1p(np.clip(working["cne"], a_min=0.0, a_max=None))
 
     cleaned = working.dropna(subset=needed).reset_index(drop=True)
     cleaned.to_csv(out_dir / "analysis_table.csv", index=False)
@@ -317,8 +366,23 @@ def main() -> None:
             seed=args.seed,
         )
 
-    pd.DataFrame(corr_rows).to_csv(out_dir / "correlations.csv", index=False)
-    pd.DataFrame(trend_rows).to_csv(out_dir / "monotonic_trends.csv", index=False)
+    correlations = pd.DataFrame(corr_rows)
+    trends = pd.DataFrame(trend_rows)
+
+    bucket_reports = [
+        _bucket_metric_report(cleaned, "kappa_geom"),
+        _bucket_metric_report(cleaned, "kappa_spec"),
+    ]
+    bucket_metrics = pd.concat(bucket_reports, ignore_index=True)
+
+    write_named_table_reports(
+        {
+            "correlations": correlations,
+            "monotonic_trends": trends,
+            "bucket_metrics": bucket_metrics,
+        },
+        output_dir=out_dir,
+    )
 
     manifest = pd.DataFrame({"input_file": [str(p) for p in input_files]})
     manifest.to_csv(out_dir / "input_manifest.csv", index=False)
