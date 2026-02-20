@@ -3,6 +3,7 @@
 from ..modules import to_2tuple
 from .camera_head import PerspectiveHead
 from .mhr_head import MHRHead
+from .perceptual_weight_head import PerceptualWeightHead
 
 
 def build_head(cfg, head_type="mhr", enable_hand_model=False, default_scale_factor=1.0):
@@ -23,6 +24,16 @@ def build_head(cfg, head_type="mhr", enable_hand_model=False, default_scale_fact
                 "MLP_CHANNEL_DIV_FACTOR", 1
             ),
             default_scale_factor=default_scale_factor,
+        )
+    elif head_type == "perceptual_weight":
+        head_cfg = cfg.MODEL.get("PERCEPTUAL_WEIGHT_HEAD", {})
+        return PerceptualWeightHead(
+            input_dim=cfg.MODEL.DECODER.DIM,
+            hidden_dim=head_cfg.get("HIDDEN_DIM", 128),
+            num_parts=head_cfg.get("NUM_PARTS", 8),
+            part_embed_dim=head_cfg.get("PART_EMBED_DIM", 16),
+            mlp_depth=head_cfg.get("MLP_DEPTH", 2),
+            min_omega=head_cfg.get("MIN_OMEGA", 1e-3),
         )
     else:
         raise ValueError("Invalid head type: ", head_type)

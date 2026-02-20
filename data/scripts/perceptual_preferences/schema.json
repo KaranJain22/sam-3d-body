@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SAM-3D-Body Pairwise Perceptual Preferences",
+  "type": "object",
+  "required": ["sample_id", "image_id", "person_id", "candidate_a", "candidate_b", "preferred"],
+  "properties": {
+    "sample_id": {"type": "string"},
+    "image_id": {"type": "string"},
+    "person_id": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+    "preferred": {"type": "string", "enum": ["a", "b"]},
+    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "candidate_a": {"$ref": "#/$defs/candidate"},
+    "candidate_b": {"$ref": "#/$defs/candidate"}
+  },
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "required": ["mesh_id", "semantic_part_ids", "curvature_scale_features", "visibility", "screen_size"],
+      "properties": {
+        "mesh_id": {"type": "string"},
+        "semantic_part_ids": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "curvature_scale_features": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": [{"type": "number"}, {"type": "number"}],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "visibility": {"type": "array", "items": {"type": "number"}},
+        "screen_size": {"type": "array", "items": {"type": "number"}},
+        "vertex_error": {"type": "array", "items": {"type": "number"}}
+      }
+    }
+  }
+}
