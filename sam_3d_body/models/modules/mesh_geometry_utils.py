@@ -54,19 +54,21 @@ def cotangent_laplacian(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
     e_ji, e_jk = vi - vj, vk - vj
     e_ki, e_kj = vi - vk, vj - vk
 
-    area_i = np.maximum(np.linalg.norm(np.cross(e_ij, e_ik), axis=1), 1e-12)
-    area_j = np.maximum(np.linalg.norm(np.cross(e_ji, e_jk), axis=1), 1e-12)
-    area_k = np.maximum(np.linalg.norm(np.cross(e_ki, e_kj), axis=1), 1e-12)
-
-    cot_i = np.einsum("ij,ij->i", e_ij, e_ik) / area_i
-    cot_j = np.einsum("ij,ij->i", e_ji, e_jk) / area_j
-    cot_k = np.einsum("ij,ij->i", e_ki, e_kj) / area_k
+    cot_i = np.einsum("ij,ij->i", e_ij, e_ik) / np.maximum(
+        np.linalg.norm(np.cross(e_ij, e_ik), axis=1), 1e-12
+    )
+    cot_j = np.einsum("ij,ij->i", e_ji, e_jk) / np.maximum(
+        np.linalg.norm(np.cross(e_ji, e_jk), axis=1), 1e-12
+    )
+    cot_k = np.einsum("ij,ij->i", e_ki, e_kj) / np.maximum(
+        np.linalg.norm(np.cross(e_ki, e_kj), axis=1), 1e-12
+    )
 
     w_ij = 0.5 * cot_k
     w_ik = 0.5 * cot_j
     w_jk = 0.5 * cot_i
 
-    # Off-diagonal terms (symmetric)
+    # Off-diagonals.
     np.add.at(lap, (i, j), -w_ij)
     np.add.at(lap, (j, i), -w_ij)
     np.add.at(lap, (i, k), -w_ik)
@@ -74,7 +76,7 @@ def cotangent_laplacian(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
     np.add.at(lap, (j, k), -w_jk)
     np.add.at(lap, (k, j), -w_jk)
 
-    # Diagonal terms
+    # Diagonals.
     np.add.at(lap, (i, i), w_ij + w_ik)
     np.add.at(lap, (j, j), w_ij + w_jk)
     np.add.at(lap, (k, k), w_ik + w_jk)
